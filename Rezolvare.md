@@ -1185,9 +1185,9 @@ Scrieți mesajele primite de server, client și printați acțiunile pe care le 
     
     Acelasi comportament este si in sens invers. Conform logurilor din program si a traficului analizat valorile pentru `seq_nr` si `ack_nr` sunt corecte insa pentru moment este ceva ce imi scapa din vedere. 
     
-2. Daca se modifica mesajul astfel incat lungimea noua a mesajului este egala cu lungimea originala totul functioneaa corect.
+2. Daca se modifica mesajul astfel incat lungimea noua a mesajului este egala cu lungimea originala totul functioneaza corect.
 
-3. Daca se modifica mesajul astfel incat lungimea noua a mesajului este mai mica decat lungimea originala totul functioneaa corect.
+3. Daca se modifica mesajul astfel incat lungimea noua a mesajului este mai mica decat lungimea originala totul functioneaza corect.
 
 4. Daca se face o combinatie de tipul celor de la pasii `2` si `3` totul va functiona corect atat timp cat initial se transmit mesaje de tipul pasului `2` si dupa mesaje de tipul pasului `3`. 
 
