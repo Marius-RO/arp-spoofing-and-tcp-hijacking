@@ -1175,9 +1175,993 @@ ARP, Ethernet (len 6), IPv4 (len 4), Reply 198.7.0.1 is-at 02:42:c6:07:00:03, le
 
 ## 2. TCP Hijacking (5%)
 
-Scrieție mesajele primite de server, client și printați acțiunile pe care le face middle.
+Scrieți mesajele primite de server, client și printați acțiunile pe care le face middle.
 
+### Observatii:
+
+1. Daca se modifica mesajul astfel incat lungimea noua a mesajului este mai mare decat lungimea originala atunci va aparea o eroare. 
+
+    Din ce am observat analizand traficul pe retea si logurile din program, nu se primeste o confirmare pentru mesajul trimis. Exemplu: Daca clientul trimite mesajul `mesaj_1` spre server si la interceptie se modifica in `mesaj_1_hacked` , serverul va primi mesajul `mesaj_1_hacked` insa confirmarea pentru acesta nu va ajunge la client, care va retransmite iar mesajul `mesaj_1`. 
+    
+    Acelasi comportament este si in sens invers. Conform logurilor din program si a traficului analizat valorile pentru `seq_nr` si `ack_nr` sunt corecte insa pentru moment este ceva ce imi scapa din vedere. 
+    
+2. Daca se modifica mesajul astfel incat lungimea noua a mesajului este egala cu lungimea originala totul functioneaa corect.
+
+3. Daca se modifica mesajul astfel incat lungimea noua a mesajului este mai mica decat lungimea originala totul functioneaa corect.
+
+4. Daca se face o combinatie de tipul celor de la pasii `2` si `3` totul va functiona corect atat timp cat initial se transmit mesaje de tipul pasului `2` si dupa mesaje de tipul pasului `3`. 
+
+    Daca initial se transmit mesaje de tipul pasului `3` cand se va incerca transmiterea unui mesaj de tipul pasului `2` va aparea o eroare (aceeasi cauza ca la mesajele de la pasul `1`). Deci se pot trimite in mod corect doar mesaje de tip `2`, urmate de mesaje de tip `3`. Intercalarea acestora genereaza eroarea mai sus amintita.
+
+5. Pasul `4` nu apare mereu ci doar la anumite rulari. De exemplu in logurile de mai jos aceasta problema nu a aparut astfel ca modificarile au putut fi intercalate.
+
+6. Avand in vedere ca nu sunt functionale toate tipurile de modificari si toate tipurile de combinatii de modificari nu am legat `"atacul"` si de `punctul 1`. Astfel `nu am rulat de pe containerul middle` aplicand otravirea de tip `ARP` inainte, ci `am rulat doar de pe containerul router` fara nici un tip de otravire. `Am incercat doar sa interceptez mesajele si sa le modific`. 
+
+
+## Explicatii sumare a modului de functionare (am adaugat comentarii mai amanuntite in cod in sursa `tcp_hijacking.py` )
+
+1. Clientul trimite un mesaj serverului (de ex: `mesaj_1`)
+
+2. Daca scriptul tcp_hijacking.py nu ruleaza pe router atunci mesajul ajuns la server nu este alterat.
+
+3. Daca scriptul tcp_hijacking.py ruleaza pe router atunci pachetul este interceptat si modificat astfel:
+
+        a. se genereaza un numar random intre 1,500
+
+        b. daca numarul este intre 1 si 200 se modifica mesajul astfel incat lungimea sa ramana aceeasi. De exemplu pentru 'mesajul_1' ar fi urmatoarea modificare ==> 'hacked__1'
+
+        c. daca numarul este intre 200 si 400 se modifica mesajul astfel incat lungimea sa fie mai mica. De exemplu pentru 'mesaj_1' ar fi urmatoarea modificare ==> 'mH_1'
+
+        d. daca numarul este intre 400 si 500 mesajul nu se modifica
+    
+4. Se efectueaza calculele necesare astfel incat sa se salveze `seq_nr si ack_nr` ( mai multe detalii in cod pe baza comentariilor)
+   
+5. Se trimite mesajul modificat la pasul `3` catre server
+
+6. Serverul primeste mesajul si trimite inapoi un nou mesaj compus din mesajul primit 
+
+7. Se opereaza aceeasi pasi ca la `3 si 4` pe mesajul de la server
+
+8. Clientul primeste mesajul de la server
+
+9. Se reiau pasii `1 - 8`
+
+
+## Explicatii pentru loguri
+
+1. Mesajele `'mesajul_1' .... 'mesajul_4'` nu au fost modificate deoarece scriptul tcp_hijacking.py nu rula pe router
+
+2. Se poate observa ca atunci cand scriptul a inceput sa ruleze a captat mesajul `mesajul_5`
+
+3. Discutie incepand cu `mesajul_5`
+
+    `Informatii despre pachetul interceptat:`
+
+        [LINE:77]# INFO     [2020-06-29 16:11:45,297]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+        
+
+    `Care era mesajul inainte de modificare:`
+        
+        [LINE:80]# INFO     [2020-06-29 16:11:45,298]  [Before RAW Load]:  b'mesajul_5'
+
+
+    `Cu aceste date a ajuns pachetul inainte sa fie modificat. CLIENT -- BEFORE specifica ca este un mesaj venit de la client`.
+
+        [LINE:100]# INFO     [2020-06-29 16:11:45,299]  [CLIENT -- BEFORE] seq_nr 3748974653:3748974662 , ack = 1963746443
+
+
+    `Acesta este ack_nr pe care serverul il asteapta. Fiind primul pachet interceptat acest numar este None, deoarece nu ar trebui intervenit la ack_nr existent in pachet.`
+
+        [LINE:101]# INFO     [2020-06-29 16:11:45,299]  server_ack_nr_expected = None
+
+    
+    `Cu aceste date a plecat pachetul spre server. Intervalul de secvente s-a modificat deoarece s-a modificat si lungimea mesajului.`
+  
+        [LINE:174]# INFO     [2020-06-29 16:11:45,300]  [CLIENT -- AFTER] seq_nr 3748974653:3748974658 , ack = 1963746443
+
+        
+    `Aceasta este secventa de la care va trebui sa porneasca urmatorul mesaj catre server. Fiecare transmisie trebuie sa aiba un interval de secvente unic (asa am considerat). De asemenea intervalul de secvente trebuie sa fie continuu ( de exemplu daca serverul primeste secventa 123:145 , urmatorul mesaj va trebui sa aiba 145:valoare ,  deci trebuie sa fie o secventa continua). Acelasi mod se aplica si la client.`
+
+        [LINE:175]# INFO     [2020-06-29 16:11:45,301]  server_start_seq_nr_expected = 3748974658
+
+    
+    `Mesajul dupa modificare. In acest caz s-a modificat astfel incat lungimea a devenit mai mica.`
+
+        [LINE:302]# INFO     [2020-06-29 16:11:45,301]  [After RAW Load]:  b"mH_5'"
+
+
+    
+    `Mesajul care vine de la server spre client (ca raspuns la mesajul anterior trimis de client). S-a modificat in acelasi mod ca mesajul anterior, astfel incat lungimea noului mesaj este mai mica decat lungimea mesajului original. Deci s-a modificat si aici intervalul de secvente precum si ack_nr asteptat de client care a preluat valoarea de la client_ack_nr_expected (valoarea pe care o asteapta clientul pentru mesajul 'mesajul_5' -- mesajul nemodificat).`
+    
+
+        [LINE:77]# INFO     [2020-06-29 16:11:45,308]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+   
+        [LINE:80]# INFO     [2020-06-29 16:11:45,308]  [Before RAW Load]:  b"Server a primit mesajul: mH_5'"
+
+        [LINE:185]# INFO     [2020-06-29 16:11:45,309]  [SERVER -- BEFORE] seq_nr 1963746443:1963746473 , ack = 3748974658
+
+        [LINE:186]# INFO     [2020-06-29 16:11:45,309]  client_ack_nr_expected = 3748974662
+  
+        [LINE:261]# INFO     [2020-06-29 16:11:45,310]  [SERVER -- AFTER] seq_nr 1963746443:1963746469 , ack = 3748974662
+
+        [LINE:262]# INFO     [2020-06-29 16:11:45,310]  client_start_seq_nr_expected = 1963746469
+
+        [LINE:302]# INFO     [2020-06-29 16:11:45,311]  [After RAW Load]:  b"Server HACK mesajul: mH_5'"
+
+
+
+    `Clientul a primit mesajul anterior si trimite o confirmare catre server care trebuie modificata cu ack_nr corespunzator. Mesajul vine cu ack_nr = 1963746469 insa dupa ce va pleca pachetul va avea ack_nr = 1963746473 (ack_nr pe care serverul il asteapta) .`
+
+        [LINE:77]# INFO     [2020-06-29 16:11:45,314]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+ 
+        [LINE:269]# INFO     [2020-06-29 16:11:45,315]  Alt tip de pachet.  Flag = A
+        [LINE:273]# INFO     [2020-06-29 16:11:45,315]  Confirmare ack = 1963746469
+        [LINE:281]# INFO     [2020-06-29 16:11:45,315]  CLIENT flag A ==> ack = 1963746473
+
+
+    `Se transmite mesajul 'mesajul_6' de la client la server. De data aceasta mesajul se modifica dar lungimea ramane aceeasi. Totusi si acum se modifica intervalul de secvente.`
+
+        [LINE:77]# INFO     [2020-06-29 16:11:50,322]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+
+        [LINE:80]# INFO     [2020-06-29 16:11:50,324]  [Before RAW Load]:  b'mesajul_6'
+
+        [LINE:100]# INFO     [2020-06-29 16:11:50,325]  [CLIENT -- BEFORE] seq_nr 3748974662:3748974671 , ack = 1963746469
+
+        [LINE:101]# INFO     [2020-06-29 16:11:50,326]  server_ack_nr_expected = 1963746473
+
+        
+        
+    `Intervalul de secvente este modificat pentru ca mesajul anterior primit de server avusese secventa 3748974653:3748974658. Astfel ca acum se va continua de la 3748974658. `
+        
+        [LINE:174]# INFO     [2020-06-29 16:11:50,328]  [CLIENT -- AFTER] seq_nr 3748974658:3748974667 , ack = 1963746473
+        
+
+    `Secventa de start viitoare este ajustata corespunzator chiar daca lungimea nu s-a modificat`
+
+        [LINE:175]# INFO     [2020-06-29 16:11:50,328]  server_start_seq_nr_expected = 3748974667
+        
+
+    `Mesajul modificat.`
+
+        [LINE:302]# INFO     [2020-06-29 16:11:50,329]  [After RAW Load]:  b"hacked_6'"
+
+
+    `Mesajul care vine de la server ca raspuns la mesajul primit anterior. In acest caz va fi modificat astfel incat lungimea mesajului va fi mai mica decat cea a mesajului original. De asemena si secventele se vor ajusta.`
+
+        [LINE:77]# INFO     [2020-06-29 16:11:50,335]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+
+        [LINE:80]# INFO     [2020-06-29 16:11:50,336]  [Before RAW Load]:  b"Server a primit mesajul: hacked_6'"
+
+        [LINE:185]# INFO     [2020-06-29 16:11:50,337]  [SERVER -- BEFORE] seq_nr 1963746473:1963746507 , ack = 3748974667
+
+        [LINE:186]# INFO     [2020-06-29 16:11:50,337]  client_ack_nr_expected = 3748974671
+
+        [LINE:261]# INFO     [2020-06-29 16:11:50,338]  [SERVER -- AFTER] seq_nr 1963746469:1963746499 , ack = 3748974671
+
+        [LINE:262]# INFO     [2020-06-29 16:11:50,338]  client_start_seq_nr_expected = 1963746499
+
+        [LINE:302]# INFO     [2020-06-29 16:11:50,339]  [After RAW Load]:  b"Server HACK mesajul: hacked_6'"
+
+
+    `Se trimite confirmarea pentru mesajul anterior primit de la server si se ajusteaza ack_nr astfel incat sa fie cel potrivit`
+
+        [LINE:77]# INFO     [2020-06-29 16:11:50,343]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+
+        [LINE:269]# INFO     [2020-06-29 16:11:50,344]  Alt tip de pachet.  Flag = A
+        [LINE:273]# INFO     [2020-06-29 16:11:50,345]  Confirmare ack = 1963746499
+        [LINE:281]# INFO     [2020-06-29 16:11:50,345]  CLIENT flag A ==> ack = 1963746507
+
+
+4. Se repeta pasii in acelasi mod pentru logurile ulterioare. 
+
+
+   
+
+
+
+## Loguri server
 
 ```
-docker-compose logs
+root@6461ed3b3f2a:/elocal/tema5-original/src# python3 tcp_server.py 
+[LINE:14]# INFO     [2020-06-29 16:11:19,227]  Serverul a pornit pe 0.0.0.0 si portul 10040
+[LINE:18]# INFO     [2020-06-29 16:11:19,227]  Asteptam conexiuni...
+[LINE:20]# INFO     [2020-06-29 16:11:20,261]  Handshake cu ('198.7.0.1', 56326)
+[LINE:28]# INFO     [2020-06-29 16:11:25,264]  Content primit: "b'mesajul_1'"
+[LINE:30]# INFO     [2020-06-29 16:11:25,264]  Content trimis: Server a primit mesajul: b'mesajul_1'
+[LINE:28]# INFO     [2020-06-29 16:11:30,270]  Content primit: "b'mesajul_2'"
+[LINE:30]# INFO     [2020-06-29 16:11:30,271]  Content trimis: Server a primit mesajul: b'mesajul_2'
+[LINE:28]# INFO     [2020-06-29 16:11:35,278]  Content primit: "b'mesajul_3'"
+[LINE:30]# INFO     [2020-06-29 16:11:35,279]  Content trimis: Server a primit mesajul: b'mesajul_3'
+[LINE:28]# INFO     [2020-06-29 16:11:40,285]  Content primit: "b'mesajul_4'"
+[LINE:30]# INFO     [2020-06-29 16:11:40,286]  Content trimis: Server a primit mesajul: b'mesajul_4'
+[LINE:28]# INFO     [2020-06-29 16:11:45,305]  Content primit: "b"mH_5'""
+[LINE:30]# INFO     [2020-06-29 16:11:45,305]  Content trimis: Server a primit mesajul: b"mH_5'"
+[LINE:28]# INFO     [2020-06-29 16:11:50,332]  Content primit: "b"hacked_6'""
+[LINE:30]# INFO     [2020-06-29 16:11:50,333]  Content trimis: Server a primit mesajul: b"hacked_6'"
+[LINE:28]# INFO     [2020-06-29 16:11:55,354]  Content primit: "b"hacked_7'""
+[LINE:30]# INFO     [2020-06-29 16:11:55,355]  Content trimis: Server a primit mesajul: b"hacked_7'"
+[LINE:28]# INFO     [2020-06-29 16:12:00,387]  Content primit: "b"mH_8'""
+[LINE:30]# INFO     [2020-06-29 16:12:00,387]  Content trimis: Server a primit mesajul: b"mH_8'"
+[LINE:28]# INFO     [2020-06-29 16:12:05,411]  Content primit: "b"hacked_9'""
+[LINE:30]# INFO     [2020-06-29 16:12:05,412]  Content trimis: Server a primit mesajul: b"hacked_9'"
+[LINE:28]# INFO     [2020-06-29 16:12:10,439]  Content primit: "b"hacked_10'""
+[LINE:30]# INFO     [2020-06-29 16:12:10,439]  Content trimis: Server a primit mesajul: b"hacked_10'"
+[LINE:28]# INFO     [2020-06-29 16:12:15,457]  Content primit: "b"hacked_11'""
+[LINE:30]# INFO     [2020-06-29 16:12:15,458]  Content trimis: Server a primit mesajul: b"hacked_11'"
+[LINE:28]# INFO     [2020-06-29 16:12:20,481]  Content primit: "b"hacked_12'""
+[LINE:30]# INFO     [2020-06-29 16:12:20,481]  Content trimis: Server a primit mesajul: b"hacked_12'"
+[LINE:28]# INFO     [2020-06-29 16:12:25,499]  Content primit: "b"hacked_13'""
+[LINE:30]# INFO     [2020-06-29 16:12:25,500]  Content trimis: Server a primit mesajul: b"hacked_13'"
+[LINE:28]# INFO     [2020-06-29 16:12:30,524]  Content primit: "b"mH_14'""
+[LINE:30]# INFO     [2020-06-29 16:12:30,524]  Content trimis: Server a primit mesajul: b"mH_14'"
+[LINE:28]# INFO     [2020-06-29 16:12:35,548]  Content primit: "b'mesajul_15'"
+[LINE:30]# INFO     [2020-06-29 16:12:35,549]  Content trimis: Server a primit mesajul: b'mesajul_15'
+[LINE:28]# INFO     [2020-06-29 16:12:40,572]  Content primit: "b"hacked_16'""
+[LINE:30]# INFO     [2020-06-29 16:12:40,573]  Content trimis: Server a primit mesajul: b"hacked_16'"
+[LINE:28]# INFO     [2020-06-29 16:12:45,593]  Content primit: "b'mesajul_17'"
+[LINE:30]# INFO     [2020-06-29 16:12:45,593]  Content trimis: Server a primit mesajul: b'mesajul_17'
+[LINE:28]# INFO     [2020-06-29 16:12:50,616]  Content primit: "b"hacked_18'""
+[LINE:30]# INFO     [2020-06-29 16:12:50,616]  Content trimis: Server a primit mesajul: b"hacked_18'"
+[LINE:28]# INFO     [2020-06-29 16:12:55,640]  Content primit: "b'mesajul_19'"
+[LINE:30]# INFO     [2020-06-29 16:12:55,641]  Content trimis: Server a primit mesajul: b'mesajul_19'
+[LINE:28]# INFO     [2020-06-29 16:13:00,666]  Content primit: "b"mH_20'""
+[LINE:30]# INFO     [2020-06-29 16:13:00,666]  Content trimis: Server a primit mesajul: b"mH_20'"
+[LINE:28]# INFO     [2020-06-29 16:13:05,690]  Content primit: "b'mesajul_21'"
+[LINE:30]# INFO     [2020-06-29 16:13:05,690]  Content trimis: Server a primit mesajul: b'mesajul_21'
+[LINE:28]# INFO     [2020-06-29 16:13:10,718]  Content primit: "b"hacked_22'""
+[LINE:30]# INFO     [2020-06-29 16:13:10,718]  Content trimis: Server a primit mesajul: b"hacked_22'"
+
+```
+
+## Loguri client
+
+```
+root@5f94fe59f1ed:/elocal/tema5-original/src# python3 tcp_client.py 
+[LINE:16]# INFO     [2020-06-29 16:11:20,260]  Handshake cu ('198.7.0.2', 10040)
+[LINE:25]# INFO     [2020-06-29 16:11:25,264]  Mesaj trimis: "mesajul_1"
+[LINE:27]# INFO     [2020-06-29 16:11:25,264]  Content primit: "b'Server a primit mesajul: mesajul_1'"
+[LINE:25]# INFO     [2020-06-29 16:11:30,271]  Mesaj trimis: "mesajul_2"
+[LINE:27]# INFO     [2020-06-29 16:11:30,272]  Content primit: "b'Server a primit mesajul: mesajul_2'"
+[LINE:25]# INFO     [2020-06-29 16:11:35,278]  Mesaj trimis: "mesajul_3"
+[LINE:27]# INFO     [2020-06-29 16:11:35,279]  Content primit: "b'Server a primit mesajul: mesajul_3'"
+[LINE:25]# INFO     [2020-06-29 16:11:40,285]  Mesaj trimis: "mesajul_4"
+[LINE:27]# INFO     [2020-06-29 16:11:40,287]  Content primit: "b'Server a primit mesajul: mesajul_4'"
+[LINE:25]# INFO     [2020-06-29 16:11:45,293]  Mesaj trimis: "mesajul_5"
+[LINE:27]# INFO     [2020-06-29 16:11:45,313]  Content primit: "b"Server HACK mesajul: mH_5'""
+[LINE:25]# INFO     [2020-06-29 16:11:50,319]  Mesaj trimis: "mesajul_6"
+[LINE:27]# INFO     [2020-06-29 16:11:50,341]  Content primit: "b"Server HACK mesajul: hacked_6'""
+[LINE:25]# INFO     [2020-06-29 16:11:55,347]  Mesaj trimis: "mesajul_7"
+[LINE:27]# INFO     [2020-06-29 16:11:55,372]  Content primit: "b"Server a primit mesajul: hacked_7'""
+[LINE:25]# INFO     [2020-06-29 16:12:00,379]  Mesaj trimis: "mesajul_8"
+[LINE:27]# INFO     [2020-06-29 16:12:00,397]  Content primit: "b"Server HACK mesajul: mH_8'""
+[LINE:25]# INFO     [2020-06-29 16:12:05,404]  Mesaj trimis: "mesajul_9"
+[LINE:27]# INFO     [2020-06-29 16:12:05,426]  Content primit: "b"Server a primit mesajul: hacked_9'""
+[LINE:25]# INFO     [2020-06-29 16:12:10,433]  Mesaj trimis: "mesajul_10"
+[LINE:27]# INFO     [2020-06-29 16:12:10,444]  Content primit: "b"Server a hacked mesajul: hacked_10'""
+[LINE:25]# INFO     [2020-06-29 16:12:15,449]  Mesaj trimis: "mesajul_11"
+[LINE:27]# INFO     [2020-06-29 16:12:15,467]  Content primit: "b"Server a hacked mesajul: hacked_11'""
+[LINE:25]# INFO     [2020-06-29 16:12:20,473]  Mesaj trimis: "mesajul_12"
+[LINE:27]# INFO     [2020-06-29 16:12:20,490]  Content primit: "b"Server HACK mesajul: hacked_12'""
+[LINE:25]# INFO     [2020-06-29 16:12:25,492]  Mesaj trimis: "mesajul_13"
+[LINE:27]# INFO     [2020-06-29 16:12:25,509]  Content primit: "b"Server a hacked mesajul: hacked_13'""
+[LINE:25]# INFO     [2020-06-29 16:12:30,516]  Mesaj trimis: "mesajul_14"
+[LINE:27]# INFO     [2020-06-29 16:12:30,533]  Content primit: "b"Server HACK mesajul: mH_14'""
+[LINE:25]# INFO     [2020-06-29 16:12:35,540]  Mesaj trimis: "mesajul_15"
+[LINE:27]# INFO     [2020-06-29 16:12:35,558]  Content primit: "b'Server a primit mesajul: mesajul_15'"
+[LINE:25]# INFO     [2020-06-29 16:12:40,564]  Mesaj trimis: "mesajul_16"
+[LINE:27]# INFO     [2020-06-29 16:12:40,582]  Content primit: "b"Server a primit mesajul: hacked_16'""
+[LINE:25]# INFO     [2020-06-29 16:12:45,584]  Mesaj trimis: "mesajul_17"
+[LINE:27]# INFO     [2020-06-29 16:12:45,601]  Content primit: "b'Server a primit mesajul: mesajul_17'"
+[LINE:25]# INFO     [2020-06-29 16:12:50,608]  Mesaj trimis: "mesajul_18"
+[LINE:27]# INFO     [2020-06-29 16:12:50,624]  Content primit: "b"Server a hacked mesajul: hacked_18'""
+[LINE:25]# INFO     [2020-06-29 16:12:55,631]  Mesaj trimis: "mesajul_19"
+[LINE:27]# INFO     [2020-06-29 16:12:55,651]  Content primit: "b'Server a hacked mesajul: mesajul_19'"
+[LINE:25]# INFO     [2020-06-29 16:13:00,658]  Mesaj trimis: "mesajul_20"
+[LINE:27]# INFO     [2020-06-29 16:13:00,675]  Content primit: "b"Server a primit mesajul: mH_20'""
+[LINE:25]# INFO     [2020-06-29 16:13:05,682]  Mesaj trimis: "mesajul_21"
+[LINE:27]# INFO     [2020-06-29 16:13:05,702]  Content primit: "b'Server HACK mesajul: mesajul_21'"
+[LINE:25]# INFO     [2020-06-29 16:13:10,709]  Mesaj trimis: "mesajul_22"
+[LINE:27]# INFO     [2020-06-29 16:13:10,727]  Content primit: "b"Server HACK mesajul: hacked_22'""
+
+```
+
+## Loguri "middle" (routerul in cazul acesta)
+
+```
+root@4c9ecff6bfe1:/elocal/tema5-original/src# python3 tcp_hijacking.py
+[LINE:76]# INFO     [2020-06-29 16:11:45,296]  
+[LINE:77]# INFO     [2020-06-29 16:11:45,297]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:11:45,297]  
+[LINE:80]# INFO     [2020-06-29 16:11:45,298]  [Before RAW Load]:  b'mesajul_5'
+[LINE:99]# INFO     [2020-06-29 16:11:45,298]  
+[LINE:100]# INFO     [2020-06-29 16:11:45,299]  [CLIENT -- BEFORE] seq_nr 3748974653:3748974662 , ack = 1963746443
+[LINE:101]# INFO     [2020-06-29 16:11:45,299]  server_ack_nr_expected = None
+[LINE:102]# INFO     [2020-06-29 16:11:45,299]  
+[LINE:174]# INFO     [2020-06-29 16:11:45,300]  [CLIENT -- AFTER] seq_nr 3748974653:3748974658 , ack = 1963746443
+[LINE:175]# INFO     [2020-06-29 16:11:45,301]  server_start_seq_nr_expected = 3748974658
+[LINE:302]# INFO     [2020-06-29 16:11:45,301]  [After RAW Load]:  b"mH_5'"
+[LINE:303]# INFO     [2020-06-29 16:11:45,302]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:11:45,307]  
+[LINE:77]# INFO     [2020-06-29 16:11:45,308]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:11:45,308]  
+[LINE:80]# INFO     [2020-06-29 16:11:45,308]  [Before RAW Load]:  b"Server a primit mesajul: mH_5'"
+[LINE:184]# INFO     [2020-06-29 16:11:45,309]  
+[LINE:185]# INFO     [2020-06-29 16:11:45,309]  [SERVER -- BEFORE] seq_nr 1963746443:1963746473 , ack = 3748974658
+[LINE:186]# INFO     [2020-06-29 16:11:45,309]  client_ack_nr_expected = 3748974662
+[LINE:187]# INFO     [2020-06-29 16:11:45,310]  
+[LINE:260]# INFO     [2020-06-29 16:11:45,310]  
+[LINE:261]# INFO     [2020-06-29 16:11:45,310]  [SERVER -- AFTER] seq_nr 1963746443:1963746469 , ack = 3748974662
+[LINE:262]# INFO     [2020-06-29 16:11:45,310]  client_start_seq_nr_expected = 1963746469
+[LINE:263]# INFO     [2020-06-29 16:11:45,310]  
+[LINE:302]# INFO     [2020-06-29 16:11:45,311]  [After RAW Load]:  b"Server HACK mesajul: mH_5'"
+[LINE:303]# INFO     [2020-06-29 16:11:45,311]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:11:45,314]  
+[LINE:77]# INFO     [2020-06-29 16:11:45,314]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:11:45,314]  
+[LINE:268]# INFO     [2020-06-29 16:11:45,315]  
+[LINE:269]# INFO     [2020-06-29 16:11:45,315]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:11:45,315]  Confirmare ack = 1963746469
+[LINE:281]# INFO     [2020-06-29 16:11:45,315]  CLIENT flag A ==> ack = 1963746473
+[LINE:303]# INFO     [2020-06-29 16:11:45,316]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:11:50,321]  
+[LINE:77]# INFO     [2020-06-29 16:11:50,322]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:11:50,323]  
+[LINE:80]# INFO     [2020-06-29 16:11:50,324]  [Before RAW Load]:  b'mesajul_6'
+[LINE:99]# INFO     [2020-06-29 16:11:50,325]  
+[LINE:100]# INFO     [2020-06-29 16:11:50,325]  [CLIENT -- BEFORE] seq_nr 3748974662:3748974671 , ack = 1963746469
+[LINE:101]# INFO     [2020-06-29 16:11:50,326]  server_ack_nr_expected = 1963746473
+[LINE:102]# INFO     [2020-06-29 16:11:50,326]  
+[LINE:174]# INFO     [2020-06-29 16:11:50,328]  [CLIENT -- AFTER] seq_nr 3748974658:3748974667 , ack = 1963746473
+[LINE:175]# INFO     [2020-06-29 16:11:50,328]  server_start_seq_nr_expected = 3748974667
+[LINE:302]# INFO     [2020-06-29 16:11:50,329]  [After RAW Load]:  b"hacked_6'"
+[LINE:303]# INFO     [2020-06-29 16:11:50,329]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:11:50,334]  
+[LINE:77]# INFO     [2020-06-29 16:11:50,335]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:11:50,336]  
+[LINE:80]# INFO     [2020-06-29 16:11:50,336]  [Before RAW Load]:  b"Server a primit mesajul: hacked_6'"
+[LINE:184]# INFO     [2020-06-29 16:11:50,336]  
+[LINE:185]# INFO     [2020-06-29 16:11:50,337]  [SERVER -- BEFORE] seq_nr 1963746473:1963746507 , ack = 3748974667
+[LINE:186]# INFO     [2020-06-29 16:11:50,337]  client_ack_nr_expected = 3748974671
+[LINE:187]# INFO     [2020-06-29 16:11:50,337]  
+[LINE:260]# INFO     [2020-06-29 16:11:50,337]  
+[LINE:261]# INFO     [2020-06-29 16:11:50,338]  [SERVER -- AFTER] seq_nr 1963746469:1963746499 , ack = 3748974671
+[LINE:262]# INFO     [2020-06-29 16:11:50,338]  client_start_seq_nr_expected = 1963746499
+[LINE:263]# INFO     [2020-06-29 16:11:50,338]  
+[LINE:302]# INFO     [2020-06-29 16:11:50,339]  [After RAW Load]:  b"Server HACK mesajul: hacked_6'"
+[LINE:303]# INFO     [2020-06-29 16:11:50,339]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:11:50,343]  
+[LINE:77]# INFO     [2020-06-29 16:11:50,343]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:11:50,344]  
+[LINE:268]# INFO     [2020-06-29 16:11:50,344]  
+[LINE:269]# INFO     [2020-06-29 16:11:50,344]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:11:50,345]  Confirmare ack = 1963746499
+[LINE:281]# INFO     [2020-06-29 16:11:50,345]  CLIENT flag A ==> ack = 1963746507
+[LINE:303]# INFO     [2020-06-29 16:11:50,345]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:11:55,349]  
+[LINE:77]# INFO     [2020-06-29 16:11:55,350]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:11:55,350]  
+[LINE:80]# INFO     [2020-06-29 16:11:55,350]  [Before RAW Load]:  b'mesajul_7'
+[LINE:99]# INFO     [2020-06-29 16:11:55,350]  
+[LINE:100]# INFO     [2020-06-29 16:11:55,351]  [CLIENT -- BEFORE] seq_nr 3748974671:3748974680 , ack = 1963746499
+[LINE:101]# INFO     [2020-06-29 16:11:55,351]  server_ack_nr_expected = 1963746507
+[LINE:102]# INFO     [2020-06-29 16:11:55,351]  
+[LINE:174]# INFO     [2020-06-29 16:11:55,351]  [CLIENT -- AFTER] seq_nr 3748974667:3748974676 , ack = 1963746507
+[LINE:175]# INFO     [2020-06-29 16:11:55,351]  server_start_seq_nr_expected = 3748974676
+[LINE:302]# INFO     [2020-06-29 16:11:55,352]  [After RAW Load]:  b"hacked_7'"
+[LINE:303]# INFO     [2020-06-29 16:11:55,352]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:11:55,357]  
+[LINE:77]# INFO     [2020-06-29 16:11:55,358]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:11:55,359]  
+[LINE:80]# INFO     [2020-06-29 16:11:55,361]  [Before RAW Load]:  b"Server a primit mesajul: hacked_7'"
+[LINE:184]# INFO     [2020-06-29 16:11:55,362]  
+[LINE:185]# INFO     [2020-06-29 16:11:55,363]  [SERVER -- BEFORE] seq_nr 1963746507:1963746541 , ack = 3748974676
+[LINE:186]# INFO     [2020-06-29 16:11:55,364]  client_ack_nr_expected = 3748974680
+[LINE:187]# INFO     [2020-06-29 16:11:55,365]  
+[LINE:260]# INFO     [2020-06-29 16:11:55,366]  
+[LINE:261]# INFO     [2020-06-29 16:11:55,366]  [SERVER -- AFTER] seq_nr 1963746499:1963746533 , ack = 3748974680
+[LINE:262]# INFO     [2020-06-29 16:11:55,367]  client_start_seq_nr_expected = 1963746533
+[LINE:263]# INFO     [2020-06-29 16:11:55,368]  
+[LINE:302]# INFO     [2020-06-29 16:11:55,368]  [After RAW Load]:  b"Server a primit mesajul: hacked_7'"
+[LINE:303]# INFO     [2020-06-29 16:11:55,369]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:11:55,375]  
+[LINE:77]# INFO     [2020-06-29 16:11:55,377]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:11:55,377]  
+[LINE:268]# INFO     [2020-06-29 16:11:55,378]  
+[LINE:269]# INFO     [2020-06-29 16:11:55,379]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:11:55,380]  Confirmare ack = 1963746533
+[LINE:281]# INFO     [2020-06-29 16:11:55,381]  CLIENT flag A ==> ack = 1963746541
+[LINE:303]# INFO     [2020-06-29 16:11:55,381]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:00,381]  
+[LINE:77]# INFO     [2020-06-29 16:12:00,382]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:00,382]  
+[LINE:80]# INFO     [2020-06-29 16:12:00,382]  [Before RAW Load]:  b'mesajul_8'
+[LINE:99]# INFO     [2020-06-29 16:12:00,382]  
+[LINE:100]# INFO     [2020-06-29 16:12:00,382]  [CLIENT -- BEFORE] seq_nr 3748974680:3748974689 , ack = 1963746533
+[LINE:101]# INFO     [2020-06-29 16:12:00,383]  server_ack_nr_expected = 1963746541
+[LINE:102]# INFO     [2020-06-29 16:12:00,383]  
+[LINE:174]# INFO     [2020-06-29 16:12:00,383]  [CLIENT -- AFTER] seq_nr 3748974676:3748974681 , ack = 1963746541
+[LINE:175]# INFO     [2020-06-29 16:12:00,384]  server_start_seq_nr_expected = 3748974681
+[LINE:302]# INFO     [2020-06-29 16:12:00,384]  [After RAW Load]:  b"mH_8'"
+[LINE:303]# INFO     [2020-06-29 16:12:00,384]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:00,389]  
+[LINE:77]# INFO     [2020-06-29 16:12:00,390]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:00,390]  
+[LINE:80]# INFO     [2020-06-29 16:12:00,390]  [Before RAW Load]:  b"Server a primit mesajul: mH_8'"
+[LINE:184]# INFO     [2020-06-29 16:12:00,391]  
+[LINE:185]# INFO     [2020-06-29 16:12:00,392]  [SERVER -- BEFORE] seq_nr 1963746541:1963746571 , ack = 3748974681
+[LINE:186]# INFO     [2020-06-29 16:12:00,392]  client_ack_nr_expected = 3748974689
+[LINE:187]# INFO     [2020-06-29 16:12:00,392]  
+[LINE:260]# INFO     [2020-06-29 16:12:00,393]  
+[LINE:261]# INFO     [2020-06-29 16:12:00,393]  [SERVER -- AFTER] seq_nr 1963746533:1963746559 , ack = 3748974689
+[LINE:262]# INFO     [2020-06-29 16:12:00,394]  client_start_seq_nr_expected = 1963746559
+[LINE:263]# INFO     [2020-06-29 16:12:00,394]  
+[LINE:302]# INFO     [2020-06-29 16:12:00,395]  [After RAW Load]:  b"Server HACK mesajul: mH_8'"
+[LINE:303]# INFO     [2020-06-29 16:12:00,395]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:00,399]  
+[LINE:77]# INFO     [2020-06-29 16:12:00,400]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:12:00,400]  
+[LINE:268]# INFO     [2020-06-29 16:12:00,400]  
+[LINE:269]# INFO     [2020-06-29 16:12:00,401]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:12:00,402]  Confirmare ack = 1963746559
+[LINE:281]# INFO     [2020-06-29 16:12:00,403]  CLIENT flag A ==> ack = 1963746571
+[LINE:303]# INFO     [2020-06-29 16:12:00,403]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:05,406]  
+[LINE:77]# INFO     [2020-06-29 16:12:05,406]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:05,406]  
+[LINE:80]# INFO     [2020-06-29 16:12:05,407]  [Before RAW Load]:  b'mesajul_9'
+[LINE:99]# INFO     [2020-06-29 16:12:05,407]  
+[LINE:100]# INFO     [2020-06-29 16:12:05,407]  [CLIENT -- BEFORE] seq_nr 3748974689:3748974698 , ack = 1963746559
+[LINE:101]# INFO     [2020-06-29 16:12:05,408]  server_ack_nr_expected = 1963746571
+[LINE:102]# INFO     [2020-06-29 16:12:05,408]  
+[LINE:174]# INFO     [2020-06-29 16:12:05,408]  [CLIENT -- AFTER] seq_nr 3748974681:3748974690 , ack = 1963746571
+[LINE:175]# INFO     [2020-06-29 16:12:05,408]  server_start_seq_nr_expected = 3748974690
+[LINE:302]# INFO     [2020-06-29 16:12:05,409]  [After RAW Load]:  b"hacked_9'"
+[LINE:303]# INFO     [2020-06-29 16:12:05,409]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:05,415]  
+[LINE:77]# INFO     [2020-06-29 16:12:05,416]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:05,416]  
+[LINE:80]# INFO     [2020-06-29 16:12:05,417]  [Before RAW Load]:  b"Server a primit mesajul: hacked_9'"
+[LINE:184]# INFO     [2020-06-29 16:12:05,418]  
+[LINE:185]# INFO     [2020-06-29 16:12:05,419]  [SERVER -- BEFORE] seq_nr 1963746571:1963746605 , ack = 3748974690
+[LINE:186]# INFO     [2020-06-29 16:12:05,419]  client_ack_nr_expected = 3748974698
+[LINE:187]# INFO     [2020-06-29 16:12:05,420]  
+[LINE:260]# INFO     [2020-06-29 16:12:05,421]  
+[LINE:261]# INFO     [2020-06-29 16:12:05,421]  [SERVER -- AFTER] seq_nr 1963746559:1963746593 , ack = 3748974698
+[LINE:262]# INFO     [2020-06-29 16:12:05,421]  client_start_seq_nr_expected = 1963746593
+[LINE:263]# INFO     [2020-06-29 16:12:05,422]  
+[LINE:302]# INFO     [2020-06-29 16:12:05,423]  [After RAW Load]:  b"Server a primit mesajul: hacked_9'"
+[LINE:303]# INFO     [2020-06-29 16:12:05,423]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:05,430]  
+[LINE:77]# INFO     [2020-06-29 16:12:05,431]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:12:05,431]  
+[LINE:268]# INFO     [2020-06-29 16:12:05,432]  
+[LINE:269]# INFO     [2020-06-29 16:12:05,433]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:12:05,433]  Confirmare ack = 1963746593
+[LINE:281]# INFO     [2020-06-29 16:12:05,434]  CLIENT flag A ==> ack = 1963746605
+[LINE:303]# INFO     [2020-06-29 16:12:05,435]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:10,435]  
+[LINE:77]# INFO     [2020-06-29 16:12:10,435]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:10,435]  
+[LINE:80]# INFO     [2020-06-29 16:12:10,436]  [Before RAW Load]:  b'mesajul_10'
+[LINE:99]# INFO     [2020-06-29 16:12:10,436]  
+[LINE:100]# INFO     [2020-06-29 16:12:10,436]  [CLIENT -- BEFORE] seq_nr 3748974698:3748974708 , ack = 1963746593
+[LINE:101]# INFO     [2020-06-29 16:12:10,436]  server_ack_nr_expected = 1963746605
+[LINE:102]# INFO     [2020-06-29 16:12:10,436]  
+[LINE:174]# INFO     [2020-06-29 16:12:10,437]  [CLIENT -- AFTER] seq_nr 3748974690:3748974700 , ack = 1963746605
+[LINE:175]# INFO     [2020-06-29 16:12:10,437]  server_start_seq_nr_expected = 3748974700
+[LINE:302]# INFO     [2020-06-29 16:12:10,437]  [After RAW Load]:  b"hacked_10'"
+[LINE:303]# INFO     [2020-06-29 16:12:10,437]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:10,440]  
+[LINE:77]# INFO     [2020-06-29 16:12:10,440]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:10,440]  
+[LINE:80]# INFO     [2020-06-29 16:12:10,441]  [Before RAW Load]:  b"Server a primit mesajul: hacked_10'"
+[LINE:184]# INFO     [2020-06-29 16:12:10,441]  
+[LINE:185]# INFO     [2020-06-29 16:12:10,441]  [SERVER -- BEFORE] seq_nr 1963746605:1963746640 , ack = 3748974700
+[LINE:186]# INFO     [2020-06-29 16:12:10,441]  client_ack_nr_expected = 3748974708
+[LINE:187]# INFO     [2020-06-29 16:12:10,441]  
+[LINE:260]# INFO     [2020-06-29 16:12:10,442]  
+[LINE:261]# INFO     [2020-06-29 16:12:10,442]  [SERVER -- AFTER] seq_nr 1963746593:1963746628 , ack = 3748974708
+[LINE:262]# INFO     [2020-06-29 16:12:10,442]  client_start_seq_nr_expected = 1963746628
+[LINE:263]# INFO     [2020-06-29 16:12:10,442]  
+[LINE:302]# INFO     [2020-06-29 16:12:10,442]  [After RAW Load]:  b"Server a hacked mesajul: hacked_10'"
+[LINE:303]# INFO     [2020-06-29 16:12:10,442]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:10,444]  
+[LINE:77]# INFO     [2020-06-29 16:12:10,444]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:12:10,445]  
+[LINE:268]# INFO     [2020-06-29 16:12:10,445]  
+[LINE:269]# INFO     [2020-06-29 16:12:10,445]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:12:10,445]  Confirmare ack = 1963746628
+[LINE:281]# INFO     [2020-06-29 16:12:10,445]  CLIENT flag A ==> ack = 1963746640
+[LINE:303]# INFO     [2020-06-29 16:12:10,445]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:15,451]  
+[LINE:77]# INFO     [2020-06-29 16:12:15,452]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:15,452]  
+[LINE:80]# INFO     [2020-06-29 16:12:15,453]  [Before RAW Load]:  b'mesajul_11'
+[LINE:99]# INFO     [2020-06-29 16:12:15,453]  
+[LINE:100]# INFO     [2020-06-29 16:12:15,453]  [CLIENT -- BEFORE] seq_nr 3748974708:3748974718 , ack = 1963746628
+[LINE:101]# INFO     [2020-06-29 16:12:15,453]  server_ack_nr_expected = 1963746640
+[LINE:102]# INFO     [2020-06-29 16:12:15,454]  
+[LINE:174]# INFO     [2020-06-29 16:12:15,454]  [CLIENT -- AFTER] seq_nr 3748974700:3748974710 , ack = 1963746640
+[LINE:175]# INFO     [2020-06-29 16:12:15,455]  server_start_seq_nr_expected = 3748974710
+[LINE:302]# INFO     [2020-06-29 16:12:15,455]  [After RAW Load]:  b"hacked_11'"
+[LINE:303]# INFO     [2020-06-29 16:12:15,455]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:15,460]  
+[LINE:77]# INFO     [2020-06-29 16:12:15,460]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:15,460]  
+[LINE:80]# INFO     [2020-06-29 16:12:15,461]  [Before RAW Load]:  b"Server a primit mesajul: hacked_11'"
+[LINE:184]# INFO     [2020-06-29 16:12:15,461]  
+[LINE:185]# INFO     [2020-06-29 16:12:15,462]  [SERVER -- BEFORE] seq_nr 1963746640:1963746675 , ack = 3748974710
+[LINE:186]# INFO     [2020-06-29 16:12:15,462]  client_ack_nr_expected = 3748974718
+[LINE:187]# INFO     [2020-06-29 16:12:15,462]  
+[LINE:260]# INFO     [2020-06-29 16:12:15,463]  
+[LINE:261]# INFO     [2020-06-29 16:12:15,463]  [SERVER -- AFTER] seq_nr 1963746628:1963746663 , ack = 3748974718
+[LINE:262]# INFO     [2020-06-29 16:12:15,463]  client_start_seq_nr_expected = 1963746663
+[LINE:263]# INFO     [2020-06-29 16:12:15,463]  
+[LINE:302]# INFO     [2020-06-29 16:12:15,464]  [After RAW Load]:  b"Server a hacked mesajul: hacked_11'"
+[LINE:303]# INFO     [2020-06-29 16:12:15,464]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:15,466]  
+[LINE:77]# INFO     [2020-06-29 16:12:15,467]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:12:15,467]  
+[LINE:268]# INFO     [2020-06-29 16:12:15,467]  
+[LINE:269]# INFO     [2020-06-29 16:12:15,467]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:12:15,467]  Confirmare ack = 1963746663
+[LINE:281]# INFO     [2020-06-29 16:12:15,468]  CLIENT flag A ==> ack = 1963746675
+[LINE:303]# INFO     [2020-06-29 16:12:15,468]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:20,475]  
+[LINE:77]# INFO     [2020-06-29 16:12:20,476]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:20,476]  
+[LINE:80]# INFO     [2020-06-29 16:12:20,476]  [Before RAW Load]:  b'mesajul_12'
+[LINE:99]# INFO     [2020-06-29 16:12:20,477]  
+[LINE:100]# INFO     [2020-06-29 16:12:20,477]  [CLIENT -- BEFORE] seq_nr 3748974718:3748974728 , ack = 1963746663
+[LINE:101]# INFO     [2020-06-29 16:12:20,477]  server_ack_nr_expected = 1963746675
+[LINE:102]# INFO     [2020-06-29 16:12:20,477]  
+[LINE:174]# INFO     [2020-06-29 16:12:20,478]  [CLIENT -- AFTER] seq_nr 3748974710:3748974720 , ack = 1963746675
+[LINE:175]# INFO     [2020-06-29 16:12:20,478]  server_start_seq_nr_expected = 3748974720
+[LINE:302]# INFO     [2020-06-29 16:12:20,478]  [After RAW Load]:  b"hacked_12'"
+[LINE:303]# INFO     [2020-06-29 16:12:20,479]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:20,483]  
+[LINE:77]# INFO     [2020-06-29 16:12:20,484]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:20,484]  
+[LINE:80]# INFO     [2020-06-29 16:12:20,484]  [Before RAW Load]:  b"Server a primit mesajul: hacked_12'"
+[LINE:184]# INFO     [2020-06-29 16:12:20,485]  
+[LINE:185]# INFO     [2020-06-29 16:12:20,485]  [SERVER -- BEFORE] seq_nr 1963746675:1963746710 , ack = 3748974720
+[LINE:186]# INFO     [2020-06-29 16:12:20,485]  client_ack_nr_expected = 3748974728
+[LINE:187]# INFO     [2020-06-29 16:12:20,486]  
+[LINE:260]# INFO     [2020-06-29 16:12:20,486]  
+[LINE:261]# INFO     [2020-06-29 16:12:20,487]  [SERVER -- AFTER] seq_nr 1963746663:1963746694 , ack = 3748974728
+[LINE:262]# INFO     [2020-06-29 16:12:20,487]  client_start_seq_nr_expected = 1963746694
+[LINE:263]# INFO     [2020-06-29 16:12:20,487]  
+[LINE:302]# INFO     [2020-06-29 16:12:20,487]  [After RAW Load]:  b"Server HACK mesajul: hacked_12'"
+[LINE:303]# INFO     [2020-06-29 16:12:20,487]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:20,491]  
+[LINE:77]# INFO     [2020-06-29 16:12:20,492]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:12:20,492]  
+[LINE:268]# INFO     [2020-06-29 16:12:20,492]  
+[LINE:269]# INFO     [2020-06-29 16:12:20,493]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:12:20,493]  Confirmare ack = 1963746694
+[LINE:281]# INFO     [2020-06-29 16:12:20,493]  CLIENT flag A ==> ack = 1963746710
+[LINE:303]# INFO     [2020-06-29 16:12:20,494]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:25,493]  
+[LINE:77]# INFO     [2020-06-29 16:12:25,494]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:25,494]  
+[LINE:80]# INFO     [2020-06-29 16:12:25,495]  [Before RAW Load]:  b'mesajul_13'
+[LINE:99]# INFO     [2020-06-29 16:12:25,495]  
+[LINE:100]# INFO     [2020-06-29 16:12:25,495]  [CLIENT -- BEFORE] seq_nr 3748974728:3748974738 , ack = 1963746694
+[LINE:101]# INFO     [2020-06-29 16:12:25,495]  server_ack_nr_expected = 1963746710
+[LINE:102]# INFO     [2020-06-29 16:12:25,496]  
+[LINE:174]# INFO     [2020-06-29 16:12:25,496]  [CLIENT -- AFTER] seq_nr 3748974720:3748974730 , ack = 1963746710
+[LINE:175]# INFO     [2020-06-29 16:12:25,496]  server_start_seq_nr_expected = 3748974730
+[LINE:302]# INFO     [2020-06-29 16:12:25,497]  [After RAW Load]:  b"hacked_13'"
+[LINE:303]# INFO     [2020-06-29 16:12:25,497]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:25,501]  
+[LINE:77]# INFO     [2020-06-29 16:12:25,502]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:25,502]  
+[LINE:80]# INFO     [2020-06-29 16:12:25,502]  [Before RAW Load]:  b"Server a primit mesajul: hacked_13'"
+[LINE:184]# INFO     [2020-06-29 16:12:25,503]  
+[LINE:185]# INFO     [2020-06-29 16:12:25,503]  [SERVER -- BEFORE] seq_nr 1963746710:1963746745 , ack = 3748974730
+[LINE:186]# INFO     [2020-06-29 16:12:25,505]  client_ack_nr_expected = 3748974738
+[LINE:187]# INFO     [2020-06-29 16:12:25,505]  
+[LINE:260]# INFO     [2020-06-29 16:12:25,506]  
+[LINE:261]# INFO     [2020-06-29 16:12:25,506]  [SERVER -- AFTER] seq_nr 1963746694:1963746729 , ack = 3748974738
+[LINE:262]# INFO     [2020-06-29 16:12:25,506]  client_start_seq_nr_expected = 1963746729
+[LINE:263]# INFO     [2020-06-29 16:12:25,506]  
+[LINE:302]# INFO     [2020-06-29 16:12:25,507]  [After RAW Load]:  b"Server a hacked mesajul: hacked_13'"
+[LINE:303]# INFO     [2020-06-29 16:12:25,507]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:25,510]  
+[LINE:77]# INFO     [2020-06-29 16:12:25,511]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:12:25,511]  
+[LINE:268]# INFO     [2020-06-29 16:12:25,511]  
+[LINE:269]# INFO     [2020-06-29 16:12:25,511]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:12:25,512]  Confirmare ack = 1963746729
+[LINE:281]# INFO     [2020-06-29 16:12:25,512]  CLIENT flag A ==> ack = 1963746745
+[LINE:303]# INFO     [2020-06-29 16:12:25,512]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:30,518]  
+[LINE:77]# INFO     [2020-06-29 16:12:30,518]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:30,519]  
+[LINE:80]# INFO     [2020-06-29 16:12:30,519]  [Before RAW Load]:  b'mesajul_14'
+[LINE:99]# INFO     [2020-06-29 16:12:30,519]  
+[LINE:100]# INFO     [2020-06-29 16:12:30,520]  [CLIENT -- BEFORE] seq_nr 3748974738:3748974748 , ack = 1963746729
+[LINE:101]# INFO     [2020-06-29 16:12:30,520]  server_ack_nr_expected = 1963746745
+[LINE:102]# INFO     [2020-06-29 16:12:30,520]  
+[LINE:174]# INFO     [2020-06-29 16:12:30,521]  [CLIENT -- AFTER] seq_nr 3748974730:3748974736 , ack = 1963746745
+[LINE:175]# INFO     [2020-06-29 16:12:30,521]  server_start_seq_nr_expected = 3748974736
+[LINE:302]# INFO     [2020-06-29 16:12:30,521]  [After RAW Load]:  b"mH_14'"
+[LINE:303]# INFO     [2020-06-29 16:12:30,521]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:30,526]  
+[LINE:77]# INFO     [2020-06-29 16:12:30,527]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:30,527]  
+[LINE:80]# INFO     [2020-06-29 16:12:30,527]  [Before RAW Load]:  b"Server a primit mesajul: mH_14'"
+[LINE:184]# INFO     [2020-06-29 16:12:30,527]  
+[LINE:185]# INFO     [2020-06-29 16:12:30,528]  [SERVER -- BEFORE] seq_nr 1963746745:1963746776 , ack = 3748974736
+[LINE:186]# INFO     [2020-06-29 16:12:30,528]  client_ack_nr_expected = 3748974748
+[LINE:187]# INFO     [2020-06-29 16:12:30,528]  
+[LINE:260]# INFO     [2020-06-29 16:12:30,529]  
+[LINE:261]# INFO     [2020-06-29 16:12:30,530]  [SERVER -- AFTER] seq_nr 1963746729:1963746756 , ack = 3748974748
+[LINE:262]# INFO     [2020-06-29 16:12:30,530]  client_start_seq_nr_expected = 1963746756
+[LINE:263]# INFO     [2020-06-29 16:12:30,530]  
+[LINE:302]# INFO     [2020-06-29 16:12:30,530]  [After RAW Load]:  b"Server HACK mesajul: mH_14'"
+[LINE:303]# INFO     [2020-06-29 16:12:30,530]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:30,534]  
+[LINE:77]# INFO     [2020-06-29 16:12:30,535]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:12:30,535]  
+[LINE:268]# INFO     [2020-06-29 16:12:30,535]  
+[LINE:269]# INFO     [2020-06-29 16:12:30,536]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:12:30,536]  Confirmare ack = 1963746756
+[LINE:281]# INFO     [2020-06-29 16:12:30,536]  CLIENT flag A ==> ack = 1963746776
+[LINE:303]# INFO     [2020-06-29 16:12:30,537]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:35,541]  
+[LINE:77]# INFO     [2020-06-29 16:12:35,542]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:35,542]  
+[LINE:80]# INFO     [2020-06-29 16:12:35,543]  [Before RAW Load]:  b'mesajul_15'
+[LINE:99]# INFO     [2020-06-29 16:12:35,543]  
+[LINE:100]# INFO     [2020-06-29 16:12:35,544]  [CLIENT -- BEFORE] seq_nr 3748974748:3748974758 , ack = 1963746756
+[LINE:101]# INFO     [2020-06-29 16:12:35,544]  server_ack_nr_expected = 1963746776
+[LINE:102]# INFO     [2020-06-29 16:12:35,544]  
+[LINE:174]# INFO     [2020-06-29 16:12:35,545]  [CLIENT -- AFTER] seq_nr 3748974736:3748974746 , ack = 1963746776
+[LINE:175]# INFO     [2020-06-29 16:12:35,545]  server_start_seq_nr_expected = 3748974746
+[LINE:302]# INFO     [2020-06-29 16:12:35,546]  [After RAW Load]:  b'mesajul_15'
+[LINE:303]# INFO     [2020-06-29 16:12:35,546]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:35,551]  
+[LINE:77]# INFO     [2020-06-29 16:12:35,552]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:35,552]  
+[LINE:80]# INFO     [2020-06-29 16:12:35,552]  [Before RAW Load]:  b'Server a primit mesajul: mesajul_15'
+[LINE:184]# INFO     [2020-06-29 16:12:35,553]  
+[LINE:185]# INFO     [2020-06-29 16:12:35,553]  [SERVER -- BEFORE] seq_nr 1963746776:1963746811 , ack = 3748974746
+[LINE:186]# INFO     [2020-06-29 16:12:35,553]  client_ack_nr_expected = 3748974758
+[LINE:187]# INFO     [2020-06-29 16:12:35,553]  
+[LINE:260]# INFO     [2020-06-29 16:12:35,554]  
+[LINE:261]# INFO     [2020-06-29 16:12:35,554]  [SERVER -- AFTER] seq_nr 1963746756:1963746791 , ack = 3748974758
+[LINE:262]# INFO     [2020-06-29 16:12:35,555]  client_start_seq_nr_expected = 1963746791
+[LINE:263]# INFO     [2020-06-29 16:12:35,555]  
+[LINE:302]# INFO     [2020-06-29 16:12:35,556]  [After RAW Load]:  b'Server a primit mesajul: mesajul_15'
+[LINE:303]# INFO     [2020-06-29 16:12:35,556]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:35,560]  
+[LINE:77]# INFO     [2020-06-29 16:12:35,561]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:12:35,561]  
+[LINE:268]# INFO     [2020-06-29 16:12:35,562]  
+[LINE:269]# INFO     [2020-06-29 16:12:35,562]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:12:35,562]  Confirmare ack = 1963746791
+[LINE:281]# INFO     [2020-06-29 16:12:35,563]  CLIENT flag A ==> ack = 1963746811
+[LINE:303]# INFO     [2020-06-29 16:12:35,563]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:40,566]  
+[LINE:77]# INFO     [2020-06-29 16:12:40,567]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:40,567]  
+[LINE:80]# INFO     [2020-06-29 16:12:40,567]  [Before RAW Load]:  b'mesajul_16'
+[LINE:99]# INFO     [2020-06-29 16:12:40,568]  
+[LINE:100]# INFO     [2020-06-29 16:12:40,568]  [CLIENT -- BEFORE] seq_nr 3748974758:3748974768 , ack = 1963746791
+[LINE:101]# INFO     [2020-06-29 16:12:40,568]  server_ack_nr_expected = 1963746811
+[LINE:102]# INFO     [2020-06-29 16:12:40,568]  
+[LINE:174]# INFO     [2020-06-29 16:12:40,569]  [CLIENT -- AFTER] seq_nr 3748974746:3748974756 , ack = 1963746811
+[LINE:175]# INFO     [2020-06-29 16:12:40,569]  server_start_seq_nr_expected = 3748974756
+[LINE:302]# INFO     [2020-06-29 16:12:40,570]  [After RAW Load]:  b"hacked_16'"
+[LINE:303]# INFO     [2020-06-29 16:12:40,570]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:40,574]  
+[LINE:77]# INFO     [2020-06-29 16:12:40,575]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:40,575]  
+[LINE:80]# INFO     [2020-06-29 16:12:40,575]  [Before RAW Load]:  b"Server a primit mesajul: hacked_16'"
+[LINE:184]# INFO     [2020-06-29 16:12:40,576]  
+[LINE:185]# INFO     [2020-06-29 16:12:40,576]  [SERVER -- BEFORE] seq_nr 1963746811:1963746846 , ack = 3748974756
+[LINE:186]# INFO     [2020-06-29 16:12:40,576]  client_ack_nr_expected = 3748974768
+[LINE:187]# INFO     [2020-06-29 16:12:40,577]  
+[LINE:260]# INFO     [2020-06-29 16:12:40,577]  
+[LINE:261]# INFO     [2020-06-29 16:12:40,577]  [SERVER -- AFTER] seq_nr 1963746791:1963746826 , ack = 3748974768
+[LINE:262]# INFO     [2020-06-29 16:12:40,577]  client_start_seq_nr_expected = 1963746826
+[LINE:263]# INFO     [2020-06-29 16:12:40,578]  
+[LINE:302]# INFO     [2020-06-29 16:12:40,579]  [After RAW Load]:  b"Server a primit mesajul: hacked_16'"
+[LINE:303]# INFO     [2020-06-29 16:12:40,580]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:40,583]  
+[LINE:77]# INFO     [2020-06-29 16:12:40,584]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:12:40,584]  
+[LINE:268]# INFO     [2020-06-29 16:12:40,584]  
+[LINE:269]# INFO     [2020-06-29 16:12:40,584]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:12:40,585]  Confirmare ack = 1963746826
+[LINE:281]# INFO     [2020-06-29 16:12:40,585]  CLIENT flag A ==> ack = 1963746846
+[LINE:303]# INFO     [2020-06-29 16:12:40,585]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:45,586]  
+[LINE:77]# INFO     [2020-06-29 16:12:45,587]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:45,587]  
+[LINE:80]# INFO     [2020-06-29 16:12:45,588]  [Before RAW Load]:  b'mesajul_17'
+[LINE:99]# INFO     [2020-06-29 16:12:45,588]  
+[LINE:100]# INFO     [2020-06-29 16:12:45,589]  [CLIENT -- BEFORE] seq_nr 3748974768:3748974778 , ack = 1963746826
+[LINE:101]# INFO     [2020-06-29 16:12:45,589]  server_ack_nr_expected = 1963746846
+[LINE:102]# INFO     [2020-06-29 16:12:45,589]  
+[LINE:174]# INFO     [2020-06-29 16:12:45,590]  [CLIENT -- AFTER] seq_nr 3748974756:3748974766 , ack = 1963746846
+[LINE:175]# INFO     [2020-06-29 16:12:45,590]  server_start_seq_nr_expected = 3748974766
+[LINE:302]# INFO     [2020-06-29 16:12:45,590]  [After RAW Load]:  b'mesajul_17'
+[LINE:303]# INFO     [2020-06-29 16:12:45,590]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:45,595]  
+[LINE:77]# INFO     [2020-06-29 16:12:45,595]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:45,595]  
+[LINE:80]# INFO     [2020-06-29 16:12:45,596]  [Before RAW Load]:  b'Server a primit mesajul: mesajul_17'
+[LINE:184]# INFO     [2020-06-29 16:12:45,596]  
+[LINE:185]# INFO     [2020-06-29 16:12:45,596]  [SERVER -- BEFORE] seq_nr 1963746846:1963746881 , ack = 3748974766
+[LINE:186]# INFO     [2020-06-29 16:12:45,597]  client_ack_nr_expected = 3748974778
+[LINE:187]# INFO     [2020-06-29 16:12:45,597]  
+[LINE:260]# INFO     [2020-06-29 16:12:45,597]  
+[LINE:261]# INFO     [2020-06-29 16:12:45,598]  [SERVER -- AFTER] seq_nr 1963746826:1963746861 , ack = 3748974778
+[LINE:262]# INFO     [2020-06-29 16:12:45,598]  client_start_seq_nr_expected = 1963746861
+[LINE:263]# INFO     [2020-06-29 16:12:45,598]  
+[LINE:302]# INFO     [2020-06-29 16:12:45,598]  [After RAW Load]:  b'Server a primit mesajul: mesajul_17'
+[LINE:303]# INFO     [2020-06-29 16:12:45,599]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:45,602]  
+[LINE:77]# INFO     [2020-06-29 16:12:45,602]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:12:45,603]  
+[LINE:268]# INFO     [2020-06-29 16:12:45,603]  
+[LINE:269]# INFO     [2020-06-29 16:12:45,603]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:12:45,604]  Confirmare ack = 1963746861
+[LINE:281]# INFO     [2020-06-29 16:12:45,604]  CLIENT flag A ==> ack = 1963746881
+[LINE:303]# INFO     [2020-06-29 16:12:45,604]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:50,610]  
+[LINE:77]# INFO     [2020-06-29 16:12:50,610]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:50,610]  
+[LINE:80]# INFO     [2020-06-29 16:12:50,611]  [Before RAW Load]:  b'mesajul_18'
+[LINE:99]# INFO     [2020-06-29 16:12:50,611]  
+[LINE:100]# INFO     [2020-06-29 16:12:50,612]  [CLIENT -- BEFORE] seq_nr 3748974778:3748974788 , ack = 1963746861
+[LINE:101]# INFO     [2020-06-29 16:12:50,612]  server_ack_nr_expected = 1963746881
+[LINE:102]# INFO     [2020-06-29 16:12:50,612]  
+[LINE:174]# INFO     [2020-06-29 16:12:50,613]  [CLIENT -- AFTER] seq_nr 3748974766:3748974776 , ack = 1963746881
+[LINE:175]# INFO     [2020-06-29 16:12:50,613]  server_start_seq_nr_expected = 3748974776
+[LINE:302]# INFO     [2020-06-29 16:12:50,613]  [After RAW Load]:  b"hacked_18'"
+[LINE:303]# INFO     [2020-06-29 16:12:50,613]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:50,618]  
+[LINE:77]# INFO     [2020-06-29 16:12:50,618]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:50,619]  
+[LINE:80]# INFO     [2020-06-29 16:12:50,619]  [Before RAW Load]:  b"Server a primit mesajul: hacked_18'"
+[LINE:184]# INFO     [2020-06-29 16:12:50,620]  
+[LINE:185]# INFO     [2020-06-29 16:12:50,620]  [SERVER -- BEFORE] seq_nr 1963746881:1963746916 , ack = 3748974776
+[LINE:186]# INFO     [2020-06-29 16:12:50,620]  client_ack_nr_expected = 3748974788
+[LINE:187]# INFO     [2020-06-29 16:12:50,620]  
+[LINE:260]# INFO     [2020-06-29 16:12:50,621]  
+[LINE:261]# INFO     [2020-06-29 16:12:50,621]  [SERVER -- AFTER] seq_nr 1963746861:1963746896 , ack = 3748974788
+[LINE:262]# INFO     [2020-06-29 16:12:50,621]  client_start_seq_nr_expected = 1963746896
+[LINE:263]# INFO     [2020-06-29 16:12:50,622]  
+[LINE:302]# INFO     [2020-06-29 16:12:50,622]  [After RAW Load]:  b"Server a hacked mesajul: hacked_18'"
+[LINE:303]# INFO     [2020-06-29 16:12:50,622]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:50,626]  
+[LINE:77]# INFO     [2020-06-29 16:12:50,627]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:12:50,627]  
+[LINE:268]# INFO     [2020-06-29 16:12:50,627]  
+[LINE:269]# INFO     [2020-06-29 16:12:50,627]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:12:50,628]  Confirmare ack = 1963746896
+[LINE:281]# INFO     [2020-06-29 16:12:50,628]  CLIENT flag A ==> ack = 1963746916
+[LINE:303]# INFO     [2020-06-29 16:12:50,628]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:55,633]  
+[LINE:77]# INFO     [2020-06-29 16:12:55,634]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:55,634]  
+[LINE:80]# INFO     [2020-06-29 16:12:55,635]  [Before RAW Load]:  b'mesajul_19'
+[LINE:99]# INFO     [2020-06-29 16:12:55,635]  
+[LINE:100]# INFO     [2020-06-29 16:12:55,636]  [CLIENT -- BEFORE] seq_nr 3748974788:3748974798 , ack = 1963746896
+[LINE:101]# INFO     [2020-06-29 16:12:55,636]  server_ack_nr_expected = 1963746916
+[LINE:102]# INFO     [2020-06-29 16:12:55,636]  
+[LINE:174]# INFO     [2020-06-29 16:12:55,637]  [CLIENT -- AFTER] seq_nr 3748974776:3748974786 , ack = 1963746916
+[LINE:175]# INFO     [2020-06-29 16:12:55,637]  server_start_seq_nr_expected = 3748974786
+[LINE:302]# INFO     [2020-06-29 16:12:55,638]  [After RAW Load]:  b'mesajul_19'
+[LINE:303]# INFO     [2020-06-29 16:12:55,638]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:55,642]  
+[LINE:77]# INFO     [2020-06-29 16:12:55,643]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:12:55,643]  
+[LINE:80]# INFO     [2020-06-29 16:12:55,644]  [Before RAW Load]:  b'Server a primit mesajul: mesajul_19'
+[LINE:184]# INFO     [2020-06-29 16:12:55,645]  
+[LINE:185]# INFO     [2020-06-29 16:12:55,645]  [SERVER -- BEFORE] seq_nr 1963746916:1963746951 , ack = 3748974786
+[LINE:186]# INFO     [2020-06-29 16:12:55,645]  client_ack_nr_expected = 3748974798
+[LINE:187]# INFO     [2020-06-29 16:12:55,646]  
+[LINE:260]# INFO     [2020-06-29 16:12:55,647]  
+[LINE:261]# INFO     [2020-06-29 16:12:55,647]  [SERVER -- AFTER] seq_nr 1963746896:1963746931 , ack = 3748974798
+[LINE:262]# INFO     [2020-06-29 16:12:55,647]  client_start_seq_nr_expected = 1963746931
+[LINE:263]# INFO     [2020-06-29 16:12:55,648]  
+[LINE:302]# INFO     [2020-06-29 16:12:55,648]  [After RAW Load]:  b'Server a hacked mesajul: mesajul_19'
+[LINE:303]# INFO     [2020-06-29 16:12:55,649]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:12:55,652]  
+[LINE:77]# INFO     [2020-06-29 16:12:55,653]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:12:55,653]  
+[LINE:268]# INFO     [2020-06-29 16:12:55,654]  
+[LINE:269]# INFO     [2020-06-29 16:12:55,655]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:12:55,655]  Confirmare ack = 1963746931
+[LINE:281]# INFO     [2020-06-29 16:12:55,656]  CLIENT flag A ==> ack = 1963746951
+[LINE:303]# INFO     [2020-06-29 16:12:55,656]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:00,660]  
+[LINE:77]# INFO     [2020-06-29 16:13:00,661]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:13:00,661]  
+[LINE:80]# INFO     [2020-06-29 16:13:00,661]  [Before RAW Load]:  b'mesajul_20'
+[LINE:99]# INFO     [2020-06-29 16:13:00,661]  
+[LINE:100]# INFO     [2020-06-29 16:13:00,662]  [CLIENT -- BEFORE] seq_nr 3748974798:3748974808 , ack = 1963746931
+[LINE:101]# INFO     [2020-06-29 16:13:00,662]  server_ack_nr_expected = 1963746951
+[LINE:102]# INFO     [2020-06-29 16:13:00,662]  
+[LINE:174]# INFO     [2020-06-29 16:13:00,663]  [CLIENT -- AFTER] seq_nr 3748974786:3748974792 , ack = 1963746951
+[LINE:175]# INFO     [2020-06-29 16:13:00,663]  server_start_seq_nr_expected = 3748974792
+[LINE:302]# INFO     [2020-06-29 16:13:00,663]  [After RAW Load]:  b"mH_20'"
+[LINE:303]# INFO     [2020-06-29 16:13:00,663]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:00,668]  
+[LINE:77]# INFO     [2020-06-29 16:13:00,668]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:13:00,669]  
+[LINE:80]# INFO     [2020-06-29 16:13:00,669]  [Before RAW Load]:  b"Server a primit mesajul: mH_20'"
+[LINE:184]# INFO     [2020-06-29 16:13:00,670]  
+[LINE:185]# INFO     [2020-06-29 16:13:00,670]  [SERVER -- BEFORE] seq_nr 1963746951:1963746982 , ack = 3748974792
+[LINE:186]# INFO     [2020-06-29 16:13:00,670]  client_ack_nr_expected = 3748974808
+[LINE:187]# INFO     [2020-06-29 16:13:00,670]  
+[LINE:260]# INFO     [2020-06-29 16:13:00,671]  
+[LINE:261]# INFO     [2020-06-29 16:13:00,671]  [SERVER -- AFTER] seq_nr 1963746931:1963746962 , ack = 3748974808
+[LINE:262]# INFO     [2020-06-29 16:13:00,672]  client_start_seq_nr_expected = 1963746962
+[LINE:263]# INFO     [2020-06-29 16:13:00,672]  
+[LINE:302]# INFO     [2020-06-29 16:13:00,672]  [After RAW Load]:  b"Server a primit mesajul: mH_20'"
+[LINE:303]# INFO     [2020-06-29 16:13:00,672]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:00,677]  
+[LINE:77]# INFO     [2020-06-29 16:13:00,678]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:13:00,678]  
+[LINE:268]# INFO     [2020-06-29 16:13:00,678]  
+[LINE:269]# INFO     [2020-06-29 16:13:00,678]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:13:00,679]  Confirmare ack = 1963746962
+[LINE:281]# INFO     [2020-06-29 16:13:00,679]  CLIENT flag A ==> ack = 1963746982
+[LINE:303]# INFO     [2020-06-29 16:13:00,680]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:05,684]  
+[LINE:77]# INFO     [2020-06-29 16:13:05,684]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:13:05,685]  
+[LINE:80]# INFO     [2020-06-29 16:13:05,685]  [Before RAW Load]:  b'mesajul_21'
+[LINE:99]# INFO     [2020-06-29 16:13:05,685]  
+[LINE:100]# INFO     [2020-06-29 16:13:05,686]  [CLIENT -- BEFORE] seq_nr 3748974808:3748974818 , ack = 1963746962
+[LINE:101]# INFO     [2020-06-29 16:13:05,686]  server_ack_nr_expected = 1963746982
+[LINE:102]# INFO     [2020-06-29 16:13:05,686]  
+[LINE:174]# INFO     [2020-06-29 16:13:05,687]  [CLIENT -- AFTER] seq_nr 3748974792:3748974802 , ack = 1963746982
+[LINE:175]# INFO     [2020-06-29 16:13:05,687]  server_start_seq_nr_expected = 3748974802
+[LINE:302]# INFO     [2020-06-29 16:13:05,687]  [After RAW Load]:  b'mesajul_21'
+[LINE:303]# INFO     [2020-06-29 16:13:05,687]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:05,693]  
+[LINE:77]# INFO     [2020-06-29 16:13:05,694]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:13:05,694]  
+[LINE:80]# INFO     [2020-06-29 16:13:05,696]  [Before RAW Load]:  b'Server a primit mesajul: mesajul_21'
+[LINE:184]# INFO     [2020-06-29 16:13:05,696]  
+[LINE:185]# INFO     [2020-06-29 16:13:05,696]  [SERVER -- BEFORE] seq_nr 1963746982:1963747017 , ack = 3748974802
+[LINE:186]# INFO     [2020-06-29 16:13:05,697]  client_ack_nr_expected = 3748974818
+[LINE:187]# INFO     [2020-06-29 16:13:05,697]  
+[LINE:260]# INFO     [2020-06-29 16:13:05,698]  
+[LINE:261]# INFO     [2020-06-29 16:13:05,698]  [SERVER -- AFTER] seq_nr 1963746962:1963746993 , ack = 3748974818
+[LINE:262]# INFO     [2020-06-29 16:13:05,698]  client_start_seq_nr_expected = 1963746993
+[LINE:263]# INFO     [2020-06-29 16:13:05,699]  
+[LINE:302]# INFO     [2020-06-29 16:13:05,699]  [After RAW Load]:  b'Server HACK mesajul: mesajul_21'
+[LINE:303]# INFO     [2020-06-29 16:13:05,699]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:05,704]  
+[LINE:77]# INFO     [2020-06-29 16:13:05,704]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:13:05,704]  
+[LINE:268]# INFO     [2020-06-29 16:13:05,705]  
+[LINE:269]# INFO     [2020-06-29 16:13:05,705]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:13:05,705]  Confirmare ack = 1963746993
+[LINE:281]# INFO     [2020-06-29 16:13:05,706]  CLIENT flag A ==> ack = 1963747017
+[LINE:303]# INFO     [2020-06-29 16:13:05,706]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:10,711]  
+[LINE:77]# INFO     [2020-06-29 16:13:10,711]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:13:10,712]  
+[LINE:80]# INFO     [2020-06-29 16:13:10,712]  [Before RAW Load]:  b'mesajul_22'
+[LINE:99]# INFO     [2020-06-29 16:13:10,712]  
+[LINE:100]# INFO     [2020-06-29 16:13:10,713]  [CLIENT -- BEFORE] seq_nr 3748974818:3748974828 , ack = 1963746993
+[LINE:101]# INFO     [2020-06-29 16:13:10,713]  server_ack_nr_expected = 1963747017
+[LINE:102]# INFO     [2020-06-29 16:13:10,714]  
+[LINE:174]# INFO     [2020-06-29 16:13:10,715]  [CLIENT -- AFTER] seq_nr 3748974802:3748974812 , ack = 1963747017
+[LINE:175]# INFO     [2020-06-29 16:13:10,715]  server_start_seq_nr_expected = 3748974812
+[LINE:302]# INFO     [2020-06-29 16:13:10,715]  [After RAW Load]:  b"hacked_22'"
+[LINE:303]# INFO     [2020-06-29 16:13:10,715]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:10,720]  
+[LINE:77]# INFO     [2020-06-29 16:13:10,721]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 PA / Raw
+[LINE:78]# INFO     [2020-06-29 16:13:10,721]  
+[LINE:80]# INFO     [2020-06-29 16:13:10,722]  [Before RAW Load]:  b"Server a primit mesajul: hacked_22'"
+[LINE:184]# INFO     [2020-06-29 16:13:10,723]  
+[LINE:185]# INFO     [2020-06-29 16:13:10,723]  [SERVER -- BEFORE] seq_nr 1963747017:1963747052 , ack = 3748974812
+[LINE:186]# INFO     [2020-06-29 16:13:10,723]  client_ack_nr_expected = 3748974828
+[LINE:187]# INFO     [2020-06-29 16:13:10,723]  
+[LINE:260]# INFO     [2020-06-29 16:13:10,724]  
+[LINE:261]# INFO     [2020-06-29 16:13:10,725]  [SERVER -- AFTER] seq_nr 1963746993:1963747024 , ack = 3748974828
+[LINE:262]# INFO     [2020-06-29 16:13:10,725]  client_start_seq_nr_expected = 1963747024
+[LINE:263]# INFO     [2020-06-29 16:13:10,725]  
+[LINE:302]# INFO     [2020-06-29 16:13:10,725]  [After RAW Load]:  b"Server HACK mesajul: hacked_22'"
+[LINE:303]# INFO     [2020-06-29 16:13:10,726]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:10,727]  
+[LINE:77]# INFO     [2020-06-29 16:13:10,728]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:13:10,728]  
+[LINE:268]# INFO     [2020-06-29 16:13:10,728]  
+[LINE:269]# INFO     [2020-06-29 16:13:10,728]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:13:10,728]  Confirmare ack = 1963747024
+[LINE:281]# INFO     [2020-06-29 16:13:10,729]  CLIENT flag A ==> ack = 1963747052
+[LINE:303]# INFO     [2020-06-29 16:13:10,729]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:12,889]  
+[LINE:77]# INFO     [2020-06-29 16:13:12,890]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 FA
+[LINE:78]# INFO     [2020-06-29 16:13:12,891]  
+[LINE:268]# INFO     [2020-06-29 16:13:12,891]  
+[LINE:269]# INFO     [2020-06-29 16:13:12,891]  Alt tip de pachet.  Flag = FA
+[LINE:303]# INFO     [2020-06-29 16:13:12,892]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:12,895]  
+[LINE:77]# INFO     [2020-06-29 16:13:12,895]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:13:12,896]  
+[LINE:268]# INFO     [2020-06-29 16:13:12,896]  
+[LINE:269]# INFO     [2020-06-29 16:13:12,896]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:13:12,897]  Confirmare ack = 1963747024
+[LINE:281]# INFO     [2020-06-29 16:13:12,897]  CLIENT flag A ==> ack = 1963747052
+[LINE:303]# INFO     [2020-06-29 16:13:12,897]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:13,109]  
+[LINE:77]# INFO     [2020-06-29 16:13:13,109]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 FA
+[LINE:78]# INFO     [2020-06-29 16:13:13,109]  
+[LINE:268]# INFO     [2020-06-29 16:13:13,109]  
+[LINE:269]# INFO     [2020-06-29 16:13:13,109]  Alt tip de pachet.  Flag = FA
+[LINE:303]# INFO     [2020-06-29 16:13:13,110]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:13,112]  
+[LINE:77]# INFO     [2020-06-29 16:13:13,112]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:13:13,112]  
+[LINE:268]# INFO     [2020-06-29 16:13:13,112]  
+[LINE:269]# INFO     [2020-06-29 16:13:13,112]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:13:13,112]  Confirmare ack = 1963747024
+[LINE:281]# INFO     [2020-06-29 16:13:13,113]  CLIENT flag A ==> ack = 1963747052
+[LINE:303]# INFO     [2020-06-29 16:13:13,113]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:13,330]  
+[LINE:77]# INFO     [2020-06-29 16:13:13,330]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 FA
+[LINE:78]# INFO     [2020-06-29 16:13:13,331]  
+[LINE:268]# INFO     [2020-06-29 16:13:13,331]  
+[LINE:269]# INFO     [2020-06-29 16:13:13,331]  Alt tip de pachet.  Flag = FA
+[LINE:303]# INFO     [2020-06-29 16:13:13,331]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:13,334]  
+[LINE:77]# INFO     [2020-06-29 16:13:13,335]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:13:13,335]  
+[LINE:268]# INFO     [2020-06-29 16:13:13,336]  
+[LINE:269]# INFO     [2020-06-29 16:13:13,336]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:13:13,336]  Confirmare ack = 1963747024
+[LINE:281]# INFO     [2020-06-29 16:13:13,337]  CLIENT flag A ==> ack = 1963747052
+[LINE:303]# INFO     [2020-06-29 16:13:13,337]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:13,648]  
+[LINE:77]# INFO     [2020-06-29 16:13:13,648]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 FA
+[LINE:78]# INFO     [2020-06-29 16:13:13,648]  
+[LINE:268]# INFO     [2020-06-29 16:13:13,648]  
+[LINE:269]# INFO     [2020-06-29 16:13:13,648]  Alt tip de pachet.  Flag = FA
+[LINE:303]# INFO     [2020-06-29 16:13:13,649]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:13,651]  
+[LINE:77]# INFO     [2020-06-29 16:13:13,652]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 A
+[LINE:78]# INFO     [2020-06-29 16:13:13,652]  
+[LINE:268]# INFO     [2020-06-29 16:13:13,652]  
+[LINE:269]# INFO     [2020-06-29 16:13:13,652]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:13:13,653]  Confirmare ack = 3748974812
+[LINE:289]# INFO     [2020-06-29 16:13:13,653]  SERVER flag A ==> ack = 3748974828
+[LINE:303]# INFO     [2020-06-29 16:13:13,653]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:13,777]  
+[LINE:77]# INFO     [2020-06-29 16:13:13,777]  [Summary packet]:IP / TCP 198.7.0.2:10040 > 172.7.0.2:56326 FA
+[LINE:78]# INFO     [2020-06-29 16:13:13,777]  
+[LINE:268]# INFO     [2020-06-29 16:13:13,777]  
+[LINE:269]# INFO     [2020-06-29 16:13:13,778]  Alt tip de pachet.  Flag = FA
+[LINE:303]# INFO     [2020-06-29 16:13:13,778]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:13,780]  
+[LINE:77]# INFO     [2020-06-29 16:13:13,780]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 A
+[LINE:78]# INFO     [2020-06-29 16:13:13,780]  
+[LINE:268]# INFO     [2020-06-29 16:13:13,781]  
+[LINE:269]# INFO     [2020-06-29 16:13:13,781]  Alt tip de pachet.  Flag = A
+[LINE:273]# INFO     [2020-06-29 16:13:13,781]  Confirmare ack = 1963747024
+[LINE:281]# INFO     [2020-06-29 16:13:13,781]  CLIENT flag A ==> ack = 1963747052
+[LINE:303]# INFO     [2020-06-29 16:13:13,781]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:13,869]  
+[LINE:77]# INFO     [2020-06-29 16:13:13,869]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 FA
+[LINE:78]# INFO     [2020-06-29 16:13:13,869]  
+[LINE:268]# INFO     [2020-06-29 16:13:13,869]  
+[LINE:269]# INFO     [2020-06-29 16:13:13,870]  Alt tip de pachet.  Flag = FA
+[LINE:303]# INFO     [2020-06-29 16:13:13,870]  ----------------------------------------
+[LINE:76]# INFO     [2020-06-29 16:13:14,093]  
+[LINE:77]# INFO     [2020-06-29 16:13:14,094]  [Summary packet]:IP / TCP 172.7.0.2:56326 > 198.7.0.2:10040 FA
+[LINE:78]# INFO     [2020-06-29 16:13:14,094]  
+[LINE:268]# INFO     [2020-06-29 16:13:14,095]  
+[LINE:269]# INFO     [2020-06-29 16:13:14,095]  Alt tip de pachet.  Flag = FA
+[LINE:303]# INFO     [2020-06-29 16:13:14,095]  ----------------------------------------
+
 ```
